@@ -62,9 +62,15 @@ Future<Response> _search(Request req, String query) async {
 }
 
 Future<Response> _stream(Request req, String id) async {
+  final isVideo = req.url.queryParameters['video'] == 'true';
+
+  final format = isVideo
+      ? 'best'
+      : 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
+
   final result = await Process.run('yt-dlp', [
     '-f',
-    'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio',
+    format,
     '--get-url',
     '--no-warnings',
     'https://www.youtube.com/watch?v=$id',
