@@ -1,16 +1,20 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart';
 import 'package:shelf_router/shelf_router.dart';
 
+final _analyzeCache = <String, List<List<double>>>{};
+
 void main() async {
   final port = int.parse(Platform.environment['PORT'] ?? '8080');
-  
+
   final router = Router();
 
   router.get('/search/<query>', _search);
   router.get('/stream/<id>', _stream);
+  router.get('/analyze/<id>', _analyze);
 
   final handler = Pipeline()
       .addMiddleware(logRequests())
@@ -73,6 +77,77 @@ Future<Response> _stream(Request req, String id) async {
 
   return Response.ok(
     jsonEncode({'url': url}),
+    headers: {'content-type': 'application/json'},
+  );
+}
+
+Future<Response> _analyze(Request req, String id) async {
+  if (_analyzeCache.containsKey(id)) {
+    return Response.ok(
+      jsonEncode({'fps': 10, 'bands': 32, 'frames': _analyzeCache[id]}),
+      headers: {'content-type': 'application/json'},
+    );
+  }
+
+  final urlResult = await Process.run('yt-dlp', [
+    '-f',
+    'bestaudio',
+    '--get-url',
+    '--no-warnings',
+    'https://www.youtube.com/watch?v=$id',
+  ]);
+
+  if (urlResult.exitCode != 0) {
+    return Response.internalServerError(body: 'URL alınamadı');
+  }
+
+  final url = (urlResult.stdout as String).trim();
+
+  final ffmpeg = await Process.start('ffmpeg', [
+    '-i',
+    url,
+    '-ac',
+    '1',
+    '-ar',
+    '22050',
+    '-f',
+    'f32le',
+    '-',
+  ]);
+
+  final bytes = <int>[];
+  await ffmpeg.stdout.forEach(bytes.addAll);
+  await ffmpeg.exitCode;
+
+  final samples = List<double>.generate(
+    bytes.length ~/ 4,
+    (i) => ByteData.sublistView(
+      Uint8List.fromList(bytes.sublist(i * 4, i * 4 + 4)),
+    ).getFloat32(0, Endian.little),
+  );
+
+  const sampleRate = 22050;
+  const fps = 10;
+  const bands = 32;
+  const frameSize = sampleRate ~/ fps;
+
+  final frames = <List<double>>[];
+
+  for (var i = 0; i + frameSize <= samples.length; i += frameSize) {
+    final frame = samples.sublist(i, i + frameSize);
+    final bandSize = frameSize ~/ bands;
+    final magnitudes = List<double>.generate(bands, (b) {
+      final slice = frame.sublist(b * bandSize, (b + 1) * bandSize);
+      final rms = slice.fold(0.0, (s, x) => s + x * x) / slice.length;
+      return (rms * 200).clamp(0.0, 1.0);
+    });
+    frames.add(magnitudes);
+  }
+
+  _analyzeCache[id] = frames;
+
+  return Response.ok(
+    jsonEncode({'fps': fps, 'bands': bands, 'frames': frames}),
     headers: {'content-type': 'application/json'},
   );
 }
