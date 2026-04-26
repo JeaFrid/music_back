@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart';
@@ -138,8 +139,9 @@ Future<Response> _analyze(Request req, String id) async {
     final bandSize = frameSize ~/ bands;
     final magnitudes = List<double>.generate(bands, (b) {
       final slice = frame.sublist(b * bandSize, (b + 1) * bandSize);
-      final rms = slice.fold(0.0, (s, x) => s + x * x) / slice.length;
-      return (rms * 200).clamp(0.0, 1.0);
+      final meanSquare = slice.fold(0.0, (s, x) => s + x * x) / slice.length;
+      final rms = math.sqrt(meanSquare);
+      return (rms * 4.0).clamp(0.0, 1.0);
     });
     frames.add(magnitudes);
   }
